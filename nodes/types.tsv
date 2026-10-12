@@ -1,0 +1,27 @@
+# nodes/types.tsv — single source of truth for `bootstrap` usage/list output.
+# Format: group<TAB>TYPE<TAB>zones(comma)<TAB>one-line description
+# Columns 4+ are free text; keep lines <=78 chars where possible.
+# Order here defines display order; groups: core, security, dev, infra.
+core	CLUSTER_NODE	Z1	LLM inference cluster member (llama.cpp rpc / LocalAI workers)
+core	ORCHESTRATION_NODE	Z2	Multi-agent orchestration (smolagents, LangGraph, MCP servers)
+core	AGENT_NODE	Z2	Autonomous coding agent host under guardrails
+core	MALWARE_NODE	Z3	Dedicated isolated malware analysis workstation
+security	RE_NODE	Z2,Z3	Reverse engineering of non-hostile or contained binaries
+security	PENTEST_NODE	Z2,Z3	Authorised testing only; scope.yaml mandatory
+security	RANGE_NODE	Z3	Practice targets in an isolated lab network
+security	FORENSICS_NODE	Z3	Memory/disk forensics with evidence hashing
+security	FUZZ_NODE	Z2,Z3	Coverage-guided fuzzing on spare CPUs
+security	SIEM_NODE	Z2	Detection engineering and rule testing
+security	THREATINTEL_NODE	Z2	IOC/feeds: MISP, YARA rule repos
+dev	VIBECODE_NODE	Z2	Beginner-friendly human+AI coding workstation
+infra	GATEWAY_NODE	Z1,Z2	Stable API endpoint; routes to active coordinator
+infra	MONITORING_NODE	Z1,Z2	Prometheus/Grafana/Loki dashboards and alerts
+infra	MIRROR_NODE	Z1,Z2	Package/GGUF/release mirror; offline installs
+infra	BUILD_NODE	Z2	Prebuilt binaries for old CPUs; publishes to mirror
+infra	RETRIEVAL_NODE	Z2	Qdrant retrieval service (embeddings + reranker)
+infra	EVAL_NODE	Z2	Answer-quality regression runs before/after changes
+infra	PROVISION_NODE	Z1,Z0	Netboot/DHCP/DNS/time; unattended wizard at scale
+infra	OOB_NODE	Z0	Power/console out-of-band access (Z0 only)
+infra	BACKUP_NODE	Z2	Encrypted backups and periodic restore tests
+infra	SECRETS_NODE	Z2	age+sops/OpenBao token and key store
+infra	EGRESS_NODE	Z2	Controlled internet path for agents (proxy + DNS filter)

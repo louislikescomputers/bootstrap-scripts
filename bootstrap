@@ -1,0 +1,202 @@
+#!/bin/sh
+# bootstrap — agent-bootstrap dispatcher (POSIX sh, ARCHITECTURE.md).
+# Runs on a minimal live ISO: no bashisms, set -eu, quote everything.
+# Usage text is EXACTLY SPECIFICATION.md section 4 (AC1); it is embedded in a
+# single quoted heredoc so nothing can reformat it. tools/parity.py extracts
+# the same block to regenerate simulator fixtures (D013).
+set -eu
+
+VERSION=0.0.0-m0
+
+# --- locate ourselves -------------------------------------------------------
+# Resolve the directory containing this script (POSIX, no readlink -f needed).
+BS_SELF=$0
+case $BS_SELF in
+	*/*) _bs_dir=$(dirname -- "$BS_SELF") ;;
+	*) _bs_dir=$(dirname -- "$(command -v -- "$BS_SELF")" 2>/dev/null || echo .) ;;
+esac
+BS_BINDIR=$(CDPATH= cd -- "$_bs_dir" && pwd)
+BS_LIBDIR="$BS_BINDIR/lib"
+BS_NODEDIR="$BS_BINDIR/nodes"
+export BS_SELF BS_BINDIR BS_LIBDIR BS_NODEDIR
+
+# --- libraries ---------------------------------------------------------------
+# shellcheck source=lib/ui.sh
+. "$BS_LIBDIR/ui.sh"
+# shellcheck source=lib/log.sh
+. "$BS_LIBDIR/log.sh"
+
+# --- usage (SPECIFICATION.md section 4; keep byte-exact) ---------------------
+usage() {
+	cat <<'USAGE'
+usage: bootstrap NODE_TYPE [options]
+       bootstrap list | plan | apply | verify | status | doctor | uninstall | wizard
+
+core:     CLUSTER_NODE  ORCHESTRATION_NODE  AGENT_NODE  MALWARE_NODE
+security: RE_NODE  PENTEST_NODE  RANGE_NODE  FORENSICS_NODE  FUZZ_NODE  SIEM_NODE  THREATINTEL_NODE
+dev:      VIBECODE_NODE
+infra:    GATEWAY_NODE  MONITORING_NODE  MIRROR_NODE  BUILD_NODE  RETRIEVAL_NODE  EVAL_NODE
+          PROVISION_NODE  OOB_NODE  BACKUP_NODE  SECRETS_NODE  EGRESS_NODE
+aliases:  AGENT_BOX=AGENT_NODE   LAB_HOST=(choose: MALWARE|RE|PENTEST|RANGE|FORENSICS)
+USAGE
+}
+
+# --- node catalog helpers ------------------------------------------------------
+# types_load <group-filter-or-empty> -> lines "group<TAB>TYPE<TAB>ZONES<TAB>DESC"
+types_load() {
+	_filter=${1:-}
+	_tsv="$BS_NODEDIR/types.tsv"
+	[ -f "$_tsv" ] || ui_die 1 "node catalog missing: $_tsv"
+	while IFS='	' read -r _g _t _z _d; do
+		case $_g in '' | '#'*) continue ;; esac
+		if [ -n "$_filter" ] && [ "$_g" != "$_filter" ]; then continue; fi
+		printf '%s\t%s\t%s\t%s\n' "$_g" "$_t" "$_z" "$_d"
+	done <"$_tsv"
+}
+
+type_exists() {
+	types_load "" | cut -f2 | grep -qx -- "$1"
+}
+
+# alias_resolve <name> -> prints canonical type on stdout; returns 1 if not an
+# alias. LAB_HOST selection goes to stderr so stdout stays machine-readable.
+alias_resolve() {
+	# shellcheck source=/dev/null
+	. "$BS_NODEDIR/aliases.conf"
+	case " $ALIASES " in
+	*" $1 "*) ;;
+	*) return 1 ;;
+	esac
+	if [ "$1" = "AGENT_BOX" ]; then
+		printf '%s\n' "$AGENT_BOX_TARGET"
+		return 0
+	fi
+	if [ "$1" = "LAB_HOST" ]; then
+		# Interactive selector (NODE_CATALOG.md section E); non-interactive
+		# callers must pass the exact lab type instead.
+		if [ ! -t 0 ]; then
+			printf 'LAB_HOST needs a choice; rerun with one of: %s\n' "$LAB_HOST_CHOICES" >&2
+			return 3
+		fi
+		_i=1
+		for _c in $LAB_HOST_CHOICES; do
+			printf '  %d) %s\n' "$_i" "$_c" >&2
+			_i=$((_i + 1))
+		done
+		printf 'Choose lab host [1-%d]: ' "$((_i - 1))" >&2
+		IFS= read -r _sel || { printf 'no selection\n' >&2; return 3; }
+		case "$_sel" in
+		1) printf 'MALWARE_NODE\n' ;;
+		2) printf 'RE_NODE\n' ;;
+		3) printf 'PENTEST_NODE\n' ;;
+		4) printf 'RANGE_NODE\n' ;;
+		5) printf 'FORENSICS_NODE\n' ;;
+		*) printf 'invalid choice: %s\n' "$_sel" >&2; return 3 ;;
+		esac
+		return 0
+	fi
+	return 1
+}
+
+# --- commands ------------------------------------------------------------------
+cmd_list() {
+	_group=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--group) [ $# -ge 2 ] || ui_die 2 "--group needs a value"
+			_group=$2; shift 2 ;;
+		--group=*) _group=${1#--group=}; shift ;;
+		-h | --help) usage; return 0 ;;
+		*) ui_die 2 "list: unknown argument: $1" ;;
+		esac
+	done
+	case $_group in '' | core | security | dev | infra) ;;
+		*) ui_die 2 "unknown group: $_group (core|security|dev|infra)" ;;
+	esac
+	types_load "$_group" | while IFS='	' read -r _g _t _z _d; do
+		printf '%-18s [%s] %-8s %s\n' "$_t" "$_g" "$_z" "$_d"
+	done
+	printf '\n%s\n' "aliases: AGENT_BOX=AGENT_NODE  LAB_HOST=(MALWARE|RE|PENTEST|RANGE|FORENSICS)"
+}
+
+# Engine commands land in M1 (IMPLEMENTATION_PLAN.md). Until then they fail
+# closed with exit 1 rather than pretending success.
+cmd_not_implemented() {
+	ui_err "'$1' is scheduled for milestone $2 (docs/IMPLEMENTATION_PLAN.md); not implemented yet."
+	exit 1
+}
+
+# --- global option parsing --------------------------------------------------------
+# Only options that affect M0 output are honoured; the rest are accepted and
+# recorded for M1 (they must never be silently ignored per R3 spirit).
+parse_globals() {
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--yes) BS_ASSUME_YES=1 ;;
+		--dry-run) BS_DRYRUN=1 ;;
+		--offline) BS_OFFLINE=1 ;;
+		--mirror) shift; [ $# -gt 0 ] || ui_die 2 "--mirror needs a URL"; BS_MIRROR=$1 ;;
+		--mirror=*) BS_MIRROR=${1#--mirror=} ;;
+		--zone) shift; [ $# -gt 0 ] || ui_die 2 "--zone needs Z0|Z1|Z2|Z3"; BS_ZONE=$1 ;;
+		--zone=*) BS_ZONE=${1#--zone=} ;;
+		--init) shift; [ $# -gt 0 ] || ui_die 2 "--init needs runit|openrc|systemd"; BS_INIT=$1 ;;
+		--init=*) BS_INIT=${1#--init=} ;;
+		--log-dir) shift; [ $# -gt 0 ] || ui_die 2 "--log-dir needs a path"; BS_LOG_DIR=$1 ;;
+		--log-dir=*) BS_LOG_DIR=${1#--log-dir=} ;;
+		--no-color) BS_NO_COLOR=1 ;;
+		--version) printf 'bootstrap %s\n' "$VERSION"; exit 0 ;;
+		-*) ui_die 2 "unknown option: $1" ;;
+		*) break ;;
+		esac
+		shift
+	done
+	export BS_ASSUME_YES BS_DRYRUN BS_OFFLINE BS_MIRROR BS_ZONE BS_INIT BS_LOG_DIR BS_NO_COLOR
+}
+
+main() {
+	parse_globals "$@"
+	# Re-source ui.sh defaults only if colour mode changed after sourcing.
+	if [ "${BS_NO_COLOR:-0}" = "1" ] || [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then
+		. "$BS_LIBDIR/ui.sh"
+	fi
+
+	if [ $# -eq 0 ]; then
+		usage
+		exit 0
+	fi
+
+	cmd=$1
+	shift || true
+	case $cmd in
+	list) cmd_list "$@" ;;
+	plan) cmd_not_implemented plan M1 ;;
+	apply) cmd_not_implemented apply M1 ;;
+	verify) cmd_not_implemented verify M1 ;;
+	status) cmd_not_implemented status M1 ;;
+	doctor) cmd_not_implemented doctor M1 ;;
+	uninstall) cmd_not_implemented uninstall M1 ;;
+	wizard) cmd_not_implemented wizard M1 ;;
+	help | -h | --help) usage ;;
+	*)
+		# NODE_TYPE form: validate/resolve now, engine arrives in M1.
+		_resolved=""
+		if _resolved=$(alias_resolve "$cmd"); then
+			: # alias resolved to canonical type on stdout
+		elif [ -z "$_resolved" ]; then
+			# not an alias (rc=1) -> treat as a plain type name;
+			# LAB_HOST selector failure (rc=3, empty stdout) already
+			# printed guidance on stderr.
+			_resolved=$cmd
+		fi
+		if type_exists "$_resolved"; then
+			log_info "requested node type: $_resolved"
+			cmd_not_implemented "apply $_resolved" M1
+		fi
+		ui_err "unknown command or node type: $cmd"
+		usage >&2
+		exit 2
+		;;
+	esac
+}
+
+main "$@"
